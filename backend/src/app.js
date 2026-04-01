@@ -20,6 +20,8 @@ const storyboardRoutes = require('../src/routes/storyboardRoutes');
 const galleryRoutes = require('../src/routes/galleryRoutes');
 const videoLogRoutes = require('../src/routes/videoLogRoutes');
 const storyboardLogRoutes = require('../src/routes/storyboardLogRoutes');
+const taskRoutes = require('../src/routes/taskRoutes');
+const projectRoutes = require('../src/routes/projectRoutes');
 
 const app = express();
 const port = process.env.PORT || 3005;
@@ -27,12 +29,16 @@ const port = process.env.PORT || 3005;
 app.use(cors()); // Enable CORS for all routes
 app.use(express.json({ limit: '20mb' })); // For parsing application/json (allow bigger payload for base64 images)
 app.use('/videos', express.static(path.join(__dirname, '../data/videos')));
+app.use('/images', express.static(path.join(__dirname, '../data/images')));
+app.use('/audio', express.static(path.join(__dirname, '../data/audio')));
 
 // Use storyboard routes
 app.use('/api/storyboard', storyboardRoutes);
 app.use('/api/gallery', galleryRoutes);
 app.use('/api/video-logs', videoLogRoutes);
 app.use('/api/storyboard-logs', storyboardLogRoutes);
+app.use('/api/tasks', taskRoutes);
+app.use('/api/projects', projectRoutes);
 
 app.get('/', (req, res) => {
   res.send('StoryGenApp Backend is running!');

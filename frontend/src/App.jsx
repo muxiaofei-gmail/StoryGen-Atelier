@@ -1,5 +1,19 @@
-import React, { useEffect, useState, useRef } from 'react';
-import { generateStoryboardApi, generateVideoApi, listGalleryApi, saveGalleryApi, deleteGalleryApi, regenerateShotImageApi } from './api';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
+import {
+  generateStoryboardApi,
+  generateVideoApi,
+  listGalleryApi,
+  saveGalleryApi,
+  deleteGalleryApi,
+  regenerateShotImageApi,
+  startVideoGenerationApi,
+  getTaskStatusApi,
+  retryFailedScenesApi,
+  recomposeVideoApi,
+  createProjectApi,
+  getActiveProjectApi,
+  updateProjectApi,
+} from './api';
 import VideoLogs from './VideoLogs';
 import {
   Container,
@@ -19,20 +33,178 @@ import {
   Skeleton,
   Modal,
   ScrollArea,
-  Select,
-  TextInput,
   ActionIcon,
+  Progress,
+  Switch,
+  Chip,
+  ThemeIcon,
+  Box,
 } from '@mantine/core';
+import {
+  IconRefresh,
+  IconPlayerPlay,
+  IconCheck,
+  IconX,
+  IconLoader,
+  IconDownload,
+} from '@tabler/icons-react';
 import './App.css';
+
+// 进度面板组件
+function ProgressPanel({ taskId, projectId, onComplete, onFailed, testMode }) {
+  const [status, setStatus] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const pollingRef = useRef(null);
+
+  const fetchStatus = useCallback(async () => {
+    if (!taskId || testMode) return;
+    setLoading(true);
+    try {
+      const data = await getTaskStatusApi(taskId);
+      setStatus(data);
+
+      if (data.status === 'completed') {
+        if (onComplete) onComplete(data);
+        if (pollingRef.current) clearInterval(pollingRef.current);
+      } else if (data.status === 'failed') {
+        if (onFailed) onFailed(data);
+        if (pollingRef.current) clearInterval(pollingRef.current);
+      }
+    } catch (err) {
+      console.error('Failed to fetch status:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, [taskId, testMode, onComplete, onFailed]);
+
+  useEffect(() => {
+    if (taskId && !testMode) {
+      fetchStatus();
+      // 每5秒自动查询
+      pollingRef.current = setInterval(fetchStatus, 5000);
+    }
+    return () => {
+      if (pollingRef.current) clearInterval(pollingRef.current);
+    };
+  }, [taskId, testMode, fetchStatus]);
+
+  if (testMode) {
+    return (
+      <Card withBorder padding="md" radius="md" mb="md">
+        <Group justify="space-between">
+          <Text>测试模式：视频已预生成</Text>
+          <Badge color="green">完成</Badge>
+        </Group>
+      </Card>
+    );
+  }
+
+  if (!status) {
+    return (
+      <Card withBorder padding="md" radius="md" mb="md">
+        <Group justify="space-between">
+          <Text>等待开始...</Text>
+          <Button size="xs" variant="light" onClick={fetchStatus} loading={loading}>
+            查询进度
+          </Button>
+        </Group>
+      </Card>
+    );
+  }
+
+  const progressColor = status.status === 'failed' ? 'red' :
+    status.status === 'completed' ? 'green' : 'blue';
+
+  return (
+    <Card withBorder padding="md" radius="md" mb="md">
+      <Stack gap="sm">
+        <Group justify="space-between">
+          <Text fw={500}>{status.message || '处理中...'}</Text>
+          <Group gap="xs">
+            <Badge color={progressColor}>
+              {status.status === 'running' ? '进行中' :
+                status.status === 'completed' ? '已完成' :
+                  status.status === 'failed' ? '失败' : '等待中'}
+            </Badge>
+            <Button size="xs" variant="light" onClick={fetchStatus} loading={loading}>
+              刷新进度
+            </Button>
+          </Group>
+        </Group>
+
+        <Progress
+          value={status.progress || 0}
+          color={progressColor}
+          size="lg"
+          radius="md"
+        />
+
+        <Group gap="md">
+          <Text size="sm" c="dimmed">
+            进度: {status.current || 0} / {status.total || 0}
+          </Text>
+          {status.completedScenes && status.completedScenes.length > 0 && (
+            <Group gap={4}>
+              <ThemeIcon color="green" size="sm">
+                <IconCheck size={14} />
+              </ThemeIcon>
+              <Text size="sm" c="green">{status.completedScenes.length} 成功</Text>
+            </Group>
+          )}
+          {status.failedScenes && status.failedScenes.length > 0 && (
+            <Group gap={4}>
+              <ThemeIcon color="red" size="sm">
+                <IconX size={14} />
+              </ThemeIcon>
+              <Text size="sm" c="red">{status.failedScenes.length} 失败</Text>
+            </Group>
+          )}
+        </Group>
+      </Stack>
+    </Card>
+  );
+}
+
+// 失败场景列表组件
+function FailedScenesPanel({ failedScenes, onRetry, onRecompose, retrying }) {
+  if (!failedScenes || failedScenes.length === 0) return null;
+
+  return (
+    <Card withBorder padding="md" radius="md" mb="md" style={{ borderColor: '#ff6b6b' }}>
+      <Stack gap="sm">
+        <Group justify="space-between">
+          <Text fw={500} c="red">
+            {failedScenes.length} 个场景生成失败
+          </Text>
+          <Group gap="xs">
+            <Button
+              size="xs"
+              color="orange"
+              onClick={onRetry}
+              loading={retrying}
+              leftSection={<IconRefresh size={14} />}
+            >
+              重试失败场景
+            </Button>
+          </Group>
+        </Group>
+        <Group gap="xs">
+          {failedScenes.map(idx => (
+            <Badge key={idx} color="red" variant="light">
+              场景 {idx + 1}
+            </Badge>
+          ))}
+        </Group>
+      </Stack>
+    </Card>
+  );
+}
 
 function App() {
   const [sentence, setSentence] = useState('');
   const [shotCount, setShotCount] = useState(6);
-  const [styleOption, setStyleOption] = useState('cyberpunk');
-  const [customStyle, setCustomStyle] = useState('');
   const [storyboard, setStoryboard] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [videoLoading, setVideoLoading] = useState(false);
   const [videos, setVideos] = useState([]);
   const [fullscreenVideo, setFullscreenVideo] = useState(null);
   const [currentStoryId, setCurrentStoryId] = useState(null);
@@ -43,12 +215,54 @@ function App() {
   const [galleryLoading, setGalleryLoading] = useState(false);
   const [showLogs, setShowLogs] = useState(false);
   const [regeneratingIndex, setRegeneratingIndex] = useState(null);
+  const [testMode, setTestMode] = useState(false);
+  const [useAiShotCount, setUseAiShotCount] = useState(true); // 默认AI自动判断
+
+  // 新增：任务和项目状态
+  const [taskId, setTaskId] = useState(null);
+  const [projectId, setProjectId] = useState(null);
+  const [taskStatus, setTaskStatus] = useState(null);
+  const [retrying, setRetrying] = useState(false);
+  const [recoveringProject, setRecoveringProject] = useState(null);
+
+  const STYLE_TEXT = '2D cartoon style, bright colors, cute characters, child-friendly, rounded shapes, simple background, suitable for children aged 6-10';
+
+  // 恢复项目检查
+  useEffect(() => {
+    const checkActiveProject = async () => {
+      try {
+        const data = await getActiveProjectApi();
+        if (data.project) {
+          setRecoveringProject(data);
+        }
+      } catch (err) {
+        console.log('No active project to recover');
+      }
+    };
+    checkActiveProject();
+  }, []);
+
+  // 恢复项目
+  const handleRecoverProject = (project) => {
+    setSentence(project.topic || '');
+    setStoryboard(project.storyboard);
+    setShotCount(project.storyboard?.length || 6);
+    setProjectId(project.id);
+    if (project.taskId) setTaskId(project.taskId);
+    setRecoveringProject(null);
+    if (project.task) {
+      setTaskStatus(project.task);
+    }
+  };
+
+  // 放弃恢复
+  const handleDismissRecover = () => {
+    setRecoveringProject(null);
+  };
 
   const resetHome = () => {
     setSentence('');
     setShotCount(6);
-    setStyleOption('cyberpunk');
-    setCustomStyle('');
     setStoryboard(null);
     setVideos([]);
     setFullscreenVideo(null);
@@ -56,41 +270,10 @@ function App() {
     setViewStory(null);
     setCurrentStoryId(null);
     setPreviewImage(null);
+    setTaskId(null);
+    setProjectId(null);
+    setTaskStatus(null);
     window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
-
-  const handleDownloadImage = (imageUrl, filename) => {
-    const link = document.createElement('a');
-    link.href = imageUrl;
-    link.download = filename || 'shot.png';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
-
-  const stylePresets = [
-    { value: 'cyberpunk', label: '赛博朋克/霓虹', text: 'Cinematic neon-noir, teal-magenta palette, volumetric rain and fog, soft bloom, anamorphic lens, shallow depth of field, film grain' },
-    { value: 'filmic', label: '电影写实', text: 'Filmic realism, natural lighting, soft bokeh, 35mm lens, muted colors, subtle grain' },
-    { value: 'watercolor', label: '水彩画', text: 'Watercolor illustration, soft edges, pastel palette, paper texture, gentle gradients' },
-    { value: 'anime', label: '动漫风', text: 'Anime cinematic style, vibrant colors, clean lines, dramatic lighting, expressive characters' },
-    { value: 'noir', label: '黑白胶片', text: 'Black and white film noir, high contrast, strong shadows, rim lighting, grainy texture' },
-    { value: 'ghibli', label: '吉卜力风', text: 'Studio Ghibli style, hand-painted backgrounds, soft lighting, whimsical atmosphere, lush nature, dreamy clouds' },
-    { value: 'oilpainting', label: '油画风', text: 'Classical oil painting style, rich textures, dramatic chiaroscuro lighting, Renaissance composition, visible brushstrokes' },
-    { value: 'pixar', label: '皮克斯3D', text: 'Pixar 3D animation style, vibrant saturated colors, soft global illumination, expressive characters, detailed textures' },
-    { value: 'inkwash', label: '水墨国风', text: 'Chinese ink wash painting, minimalist composition, flowing brushstrokes, misty mountains, traditional aesthetics, monochrome with subtle color accents' },
-    { value: 'scifi', label: '科幻未来', text: 'Futuristic sci-fi, sleek metallic surfaces, holographic displays, blue and orange color scheme, epic scale, lens flares' },
-    { value: 'fantasy', label: '奇幻魔法', text: 'Epic fantasy style, magical glowing elements, dramatic lighting, mythical creatures, rich jewel tones, cinematic composition' },
-    { value: 'retro', label: '复古怀旧', text: 'Vintage retro aesthetic, warm sepia tones, film grain, light leaks, 1970s color palette, nostalgic mood' },
-    { value: 'comic', label: '美漫风', text: 'American comic book style, bold outlines, halftone dots, dynamic action poses, vibrant primary colors, dramatic shadows' },
-    { value: 'minimalist', label: '极简主义', text: 'Minimalist design, clean geometric shapes, limited color palette, negative space, modern aesthetics, subtle gradients' },
-    { value: 'steampunk', label: '蒸汽朋克', text: 'Steampunk aesthetic, brass and copper machinery, Victorian architecture, gears and clockwork, warm amber lighting, industrial fog' },
-    { value: 'custom', label: '自定义', text: '' },
-  ];
-
-  const resolveStyleText = () => {
-    if (styleOption === 'custom') return customStyle;
-    const found = stylePresets.find((s) => s.value === styleOption);
-    return found?.text || '';
   };
 
   useEffect(() => {
@@ -115,65 +298,137 @@ function App() {
     setStoryboard(null);
     setVideos([]);
     setCurrentStoryId(null);
+    setTaskId(null);
+    setTaskStatus(null);
 
     try {
-      const styleText = resolveStyleText();
-      const generatedStoryboard = await generateStoryboardApi(sentence, shotCount, styleText);
+      // 如果使用AI自动判断，传递null；否则传递用户指定的数量
+      const actualShotCount = useAiShotCount ? null : shotCount;
+      const generatedStoryboard = await generateStoryboardApi(sentence, actualShotCount, STYLE_TEXT, testMode);
       setStoryboard(generatedStoryboard);
+
+      // 如果是用户指定数量但AI返回了不同数量，更新显示
+      if (!useAiShotCount && generatedStoryboard.length !== shotCount) {
+        setShotCount(generatedStoryboard.length);
+      }
+
+      // 创建项目保存状态
+      if (!testMode) {
+        const projectData = await createProjectApi(sentence, generatedStoryboard, STYLE_TEXT);
+        if (projectData.project) {
+          setProjectId(projectData.project.id);
+        }
+      }
     } catch (err) {
       setError(err.message);
-      console.error('Error in App.jsx:', err);
+      console.error('Error:', err);
     } finally {
       setLoading(false);
     }
   };
 
-  const handleGenerateVideo = async () => {
+  // 开始视频生成（带进度跟踪）
+  const handleStartVideoGeneration = async () => {
     if (!storyboard) return;
 
-    setVideoLoading(true);
     setError(null);
-    try {
-      const url = await generateVideoApi(storyboard);
-      const newVideo = { url, createdAt: new Date().toISOString() };
-      const updatedVideos = [...videos, newVideo];
-      setVideos(updatedVideos);
+    setVideos([]);
 
-      if (currentStoryId) {
-        const existingStory = savedStories.find((s) => s.id === currentStoryId);
-        if (existingStory) {
-          const updatedStory = {
-            ...existingStory,
-            storyboard,
-            videos: updatedVideos,
-          };
-          saveGalleryApi(updatedStory)
-            .then((saved) => {
-              setSavedStories((prev) => prev.map((s) => (s.id === saved.id ? saved : s)));
-            })
-            .catch((err) => console.error('Auto-save video failed:', err));
-        }
-      } else {
-        const newStory = {
-          title: sentence,
-          createdAt: new Date().toISOString(),
-          shotCount: storyboard.length,
-          storyboard,
-          style: resolveStyleText(),
-          videos: updatedVideos,
-        };
-        saveGalleryApi(newStory)
-          .then((saved) => {
-            setSavedStories((prev) => [...prev, saved]);
-            setCurrentStoryId(saved.id);
-          })
-          .catch((err) => console.error('Auto-save story with video failed:', err));
+    try {
+      const result = await startVideoGenerationApi(storyboard, projectId, testMode);
+      setTaskId(result.taskId);
+      if (result.projectId) setProjectId(result.projectId);
+
+      // 如果是测试模式，直接设置视频
+      if (testMode && result.videoUrl) {
+        setVideos([{ url: result.videoUrl, createdAt: new Date().toISOString() }]);
+      }
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  // 视频生成完成回调
+  const handleVideoComplete = (status) => {
+    setTaskStatus(status);
+    if (status.finalVideoUrl) {
+      setVideos([{ url: status.finalVideoUrl, createdAt: new Date().toISOString() }]);
+    }
+  };
+
+  // 视频生成失败回调
+  const handleVideoFailed = (status) => {
+    setTaskStatus(status);
+    setError(status.errorMessage || '视频生成失败');
+  };
+
+  // 重试失败场景
+  const handleRetryFailed = async () => {
+    if (!taskId || !storyboard) return;
+    setRetrying(true);
+    setError(null);
+
+    try {
+      const result = await retryFailedScenesApi(taskId, storyboard);
+      setTaskStatus(prev => ({
+        ...prev,
+        sceneResults: result.sceneResults,
+      }));
+
+      // 如果重试成功了一些，提示可以重新合成
+      if (result.failedCount === 0) {
+        setError(null);
       }
     } catch (err) {
       setError(err.message);
     } finally {
-      setVideoLoading(false);
+      setRetrying(false);
     }
+  };
+
+  // 重新合成视频
+  const handleRecompose = async () => {
+    if (!taskId || !storyboard) return;
+    setRetrying(true);
+    setError(null);
+
+    try {
+      const result = await recomposeVideoApi(taskId, storyboard);
+      if (result.videoUrl) {
+        setVideos([{ url: result.videoUrl, createdAt: new Date().toISOString() }]);
+        setTaskStatus(prev => ({
+          ...prev,
+          status: 'completed',
+          finalVideoUrl: result.videoUrl,
+        }));
+      }
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setRetrying(false);
+    }
+  };
+
+  // 兼容旧版视频生成
+  const handleGenerateVideo = async () => {
+    if (!storyboard) return;
+    setError(null);
+    try {
+      const url = await generateVideoApi(storyboard, testMode);
+      const newVideo = { url, createdAt: new Date().toISOString() };
+      setVideos([newVideo]);
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const handleDownloadImage = (imageUrl, filename) => {
+    const link = document.createElement('a');
+    link.href = imageUrl;
+    link.download = filename || 'shot.png';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   const isPlaceholderImage = (url) => {
@@ -183,25 +438,21 @@ function App() {
 
   const handleRegenerateShotImage = async (index) => {
     if (!storyboard || index < 0 || index >= storyboard.length) return;
-
     setRegeneratingIndex(index);
     setError(null);
 
     try {
       const shot = storyboard[index];
-      const styleText = resolveStyleText();
-      
       let referenceImageBase64 = null;
       if (index > 0 && storyboard[0]?.imageUrl?.startsWith('data:')) {
         referenceImageBase64 = storyboard[0].imageUrl.split(',')[1];
       }
-      
       const heroSubject = storyboard[0]?.heroSubject || '';
       const previousStyleHint = index > 0 ? storyboard[index - 1]?.prompt || '' : '';
 
       const newImageUrl = await regenerateShotImageApi(
         shot,
-        styleText,
+        STYLE_TEXT,
         referenceImageBase64,
         heroSubject,
         previousStyleHint
@@ -210,19 +461,6 @@ function App() {
       const updatedStoryboard = [...storyboard];
       updatedStoryboard[index] = { ...updatedStoryboard[index], imageUrl: newImageUrl };
       setStoryboard(updatedStoryboard);
-
-      const existingStory = savedStories.find((s) => s.title === sentence);
-      if (existingStory) {
-        const updatedStory = {
-          ...existingStory,
-          storyboard: updatedStoryboard,
-        };
-        saveGalleryApi(updatedStory)
-          .then((saved) => {
-            setSavedStories((prev) => prev.map((s) => (s.id === saved.id ? saved : s)));
-          })
-          .catch((err) => console.error('Auto-save failed:', err));
-      }
     } catch (err) {
       setError(err.message);
     } finally {
@@ -238,7 +476,7 @@ function App() {
       createdAt: new Date().toISOString(),
       shotCount: storyboard.length,
       storyboard,
-      style: resolveStyleText(),
+      style: STYLE_TEXT,
       videos,
     };
     saveGalleryApi(story)
@@ -249,19 +487,31 @@ function App() {
       .catch((err) => setError(err.message));
   };
 
-  const handleLoadStory = (id) => {
+  const handleLoadStory = async (id) => {
     const story = savedStories.find((s) => s.id === id);
     if (!story) return;
     setSentence(story.title);
     setStoryboard(story.storyboard);
     setShotCount(story.shotCount || story.storyboard.length || 6);
-    if (story.style) {
-      setStyleOption('custom');
-      setCustomStyle(story.style);
-    }
     setVideos(story.videos || []);
     setCurrentStoryId(story.id);
     setViewStory(null);
+
+    // 尝试查询项目状态，获取任务信息
+    try {
+      const projectData = await getProjectApi(id);
+      if (projectData.project) {
+        setProjectId(projectData.project.id);
+        if (projectData.project.taskId) {
+          setTaskId(projectData.project.taskId);
+        }
+        if (projectData.task) {
+          setTaskStatus(projectData.task);
+        }
+      }
+    } catch (err) {
+      console.log('No project data for this story');
+    }
   };
 
   const handleDeleteStory = (id) => {
@@ -273,6 +523,16 @@ function App() {
   const handleViewStory = (story) => {
     setViewStory(story);
   };
+
+  // 获取失败场景列表
+  const getFailedScenes = () => {
+    if (!taskStatus?.sceneResults) return [];
+    return taskStatus.sceneResults
+      .filter(s => s.status === 'failed')
+      .map(s => s.sceneIndex);
+  };
+
+  const failedScenes = getFailedScenes();
 
   const renderShots = () => {
     if (loading) {
@@ -298,8 +558,20 @@ function App() {
         {storyboard.map((shot, index) => {
           const isFailed = isPlaceholderImage(shot.imageUrl);
           const isRegenerating = regeneratingIndex === index;
+          const sceneStatus = taskStatus?.sceneResults?.find(s => s.sceneIndex === index);
+          const isSceneFailed = sceneStatus?.status === 'failed';
+          const isSceneSuccess = sceneStatus?.status === 'success';
+
           return (
-            <Card key={`shot-${index}`} className="shot-card" padding="lg" radius="lg" shadow="xl" withBorder>
+            <Card
+              key={`shot-${index}`}
+              className="shot-card"
+              padding="lg"
+              radius="lg"
+              shadow="xl"
+              withBorder
+              style={isSceneFailed ? { borderColor: '#ff6b6b' } : {}}
+            >
               <div
                 className={`shot-image-wrapper ${isFailed ? 'shot-image-failed' : ''}`}
                 onClick={isFailed && !isRegenerating ? () => handleRegenerateShotImage(index) : (!isFailed && !isRegenerating ? () => setPreviewImage({ url: shot.imageUrl, name: `shot_${index + 1}.png` }) : undefined)}
@@ -322,6 +594,22 @@ function App() {
                   <div className="shot-retry-overlay">
                     <Text size="sm" c="white">点击重新生成</Text>
                   </div>
+                )}
+                {isSceneSuccess && (
+                  <Badge
+                    color="green"
+                    style={{ position: 'absolute', top: 8, right: 8 }}
+                  >
+                    ✓
+                  </Badge>
+                )}
+                {isSceneFailed && (
+                  <Badge
+                    color="red"
+                    style={{ position: 'absolute', top: 8, right: 8 }}
+                  >
+                    ✗
+                  </Badge>
                 )}
               </div>
               <Title order={4} className="shot-title" mb="sm">
@@ -353,7 +641,7 @@ function App() {
                   radius="xl"
                   onClick={() => setFullscreenVideo(video.url)}
                 >
-                  <span style={{ fontSize: 20 }}>▶</span>
+                  <IconPlayerPlay size={20} />
                 </ActionIcon>
               </div>
             </div>
@@ -362,13 +650,6 @@ function App() {
             </Title>
           </Card>
         ))}
-        {videoLoading && (
-          <Card className="shot-card" padding="lg" radius="lg" shadow="lg" withBorder>
-            <Skeleton height={220} radius="md" mb="md" />
-            <Skeleton height={18} width="60%" radius="sm" mb="sm" />
-            <Skeleton height={14} radius="sm" width="40%" />
-          </Card>
-        )}
       </SimpleGrid>
     );
   };
@@ -379,7 +660,7 @@ function App() {
         <div className="hero">
           <Group justify="space-between" align="center">
             <Title order={1} className="hero-title" onClick={resetHome}>
-              StoryGen Atelier
+              少儿科普动漫生成
             </Title>
             <Button
               className="log-button"
@@ -393,6 +674,23 @@ function App() {
           </Group>
         </div>
 
+        {/* 恢复项目提示 */}
+        {recoveringProject && (
+          <Alert color="blue" variant="light" mb="md" withCloseButton onClose={handleDismissRecover}>
+            <Group justify="space-between" align="center">
+              <Text>检测到未完成的项目：{recoveringProject.project?.topic || '未命名'}</Text>
+              <Group gap="xs">
+                <Button size="xs" color="blue" onClick={() => handleRecoverProject(recoveringProject.project)}>
+                  恢复项目
+                </Button>
+                <Button size="xs" variant="light" onClick={handleDismissRecover}>
+                  放弃
+                </Button>
+              </Group>
+            </Group>
+          </Alert>
+        )}
+
         <Card className="glass-panel" withBorder padding="lg" radius="xl" shadow="xl">
           <form onSubmit={handleSubmit}>
             <Stack gap={8}>
@@ -403,7 +701,7 @@ function App() {
                 <Textarea
                   value={sentence}
                   onChange={(e) => setSentence(e.target.value)}
-                  placeholder="输入一句话，例如：在雨中的霓虹都市里，一只猫寻找失落的记忆。"
+                  placeholder="输入科普选题，例如：为什么天是蓝的？"
                   minRows={1}
                   maxRows={4}
                   required
@@ -411,63 +709,36 @@ function App() {
                 />
               </Stack>
 
-              <Stack gap={4}>
-                <Text c="dimmed" className="form-label">
-                  风格
-                </Text>
-                <Group align="center" gap="md" wrap="wrap">
-                  <Select
-                    data={stylePresets.map((s) => ({ value: s.value, label: s.label }))}
-                    value={styleOption}
-                    onChange={(val) => setStyleOption(val || 'cyberpunk')}
-                    placeholder="选择风格"
-                    maw={240}
-                    className="style-select"
-                  />
-                  {styleOption === 'custom' ? (
-                    <TextInput
-                      placeholder="自定义风格描述（可中文）"
-                      value={customStyle}
-                      onChange={(e) => setCustomStyle(e.target.value)}
-                      maw={360}
-                    />
-                  ) : (
-                    <Text size="sm" c="dimmed" maw={360}>
-                      {stylePresets.find((s) => s.value === styleOption)?.text}
-                    </Text>
-                  )}
-                </Group>
-              </Stack>
-
               <Group align="center" justify="space-between" wrap="wrap" gap="md">
-                <div className="slider-block">
-                  <Text size="sm" c="dimmed" mb={6} className="form-label">
-                    分镜数量：{shotCount} 张
-                  </Text>
-                  <Slider
-                    min={2}
-                    max={12}
-                    step={1}
-                    value={shotCount}
-                    onChange={setShotCount}
-                    marks={[
-                      { value: 3, label: '3' },
-                      { value: 6, label: '6' },
-                      { value: 9, label: '9' },
-                      { value: 12, label: '12' },
-                    ]}
-                  />
-                </div>
                 <NumberInput
-                  label="精确输入"
+                  label="分镜数量"
+                  description={useAiShotCount ? "AI将自动判断最佳数量" : `将生成 ${shotCount} 张分镜`}
                   min={2}
                   max={12}
                   value={shotCount}
-                  onChange={(val) => setShotCount(Number(val) || 6)}
+                  onChange={(val) => {
+                    setShotCount(Number(val) || 6);
+                    setUseAiShotCount(false);
+                  }}
                   maw={140}
                 />
+                <Button
+                  size="md"
+                  variant={useAiShotCount ? "filled" : "light"}
+                  color="violet"
+                  onClick={() => setUseAiShotCount(true)}
+                >
+                  {useAiShotCount ? '✓ AI自动判断' : 'AI自动判断'}
+                </Button>
+                <Switch
+                  label="测试模式"
+                  checked={testMode}
+                  onChange={(e) => setTestMode(e.currentTarget.checked)}
+                  color="orange"
+                  description="使用已有数据"
+                />
                 <Button type="submit" size="md" variant="gradient" gradient={{ from: 'cyan', to: 'indigo' }} loading={loading}>
-                  {loading ? '生成中...' : '生成分镜'}
+                  {loading ? '生成中...' : '生成脚本'}
                 </Button>
               </Group>
             </Stack>
@@ -495,14 +766,54 @@ function App() {
                 <Button
                   variant="outline"
                   color="teal"
-                  onClick={handleGenerateVideo}
-                  loading={videoLoading}
-                  disabled={!storyboard}
+                  onClick={handleStartVideoGeneration}
+                  loading={loading}
+                  disabled={!storyboard || (taskId && taskStatus?.status === 'running')}
                 >
-                  {videoLoading ? '生成视频中...' : '从分镜生成视频'}
+                  {taskId && taskStatus?.status === 'running' ? '生成中...' : '开始生成视频'}
                 </Button>
               </Group>
             </Group>
+
+            {/* 进度面板 */}
+            {taskId && (
+              <ProgressPanel
+                taskId={taskId}
+                projectId={projectId}
+                testMode={testMode}
+                onComplete={handleVideoComplete}
+                onFailed={handleVideoFailed}
+              />
+            )}
+
+            {/* 失败场景面板 */}
+            {failedScenes.length > 0 && (
+              <FailedScenesPanel
+                failedScenes={failedScenes}
+                onRetry={handleRetryFailed}
+                onRecompose={handleRecompose}
+                retrying={retrying}
+              />
+            )}
+
+            {/* 当有失败场景成功重试后，显示重新合成按钮 */}
+            {/* 条件：任务已完成 + 有成功的场景 + (没有视频 或 视频数量少于成功场景数) */}
+            {taskStatus?.status === 'completed' &&
+              taskStatus?.sceneResults?.filter(s => s.status === 'success').length > 0 &&
+              (videos.length === 0 || videos.length < taskStatus?.sceneResults?.filter(s => s.status === 'success').length) && (
+                <Card withBorder padding="md" radius="md" mb="md" style={{ borderColor: '#20c997' }}>
+                  <Group justify="space-between">
+                    <Text>
+                      {videos.length === 0
+                        ? '所有场景已成功，是否合成视频？'
+                        : `有 ${taskStatus?.sceneResults?.filter(s => s.status === 'success').length - videos.length} 个新成功的场景，是否重新合成视频？`}
+                    </Text>
+                    <Button color="teal" onClick={handleRecompose} loading={retrying}>
+                      重新合成视频
+                    </Button>
+                  </Group>
+                </Card>
+              )}
 
             {renderShots()}
           </div>
@@ -639,7 +950,7 @@ function App() {
               onClick={() => handleDownloadImage(previewImage.url, previewImage.name)}
               title="下载图片"
             >
-              <span style={{ fontSize: 16 }}>⬇</span>
+              <IconDownload size={16} />
             </ActionIcon>
             <Image
               src={previewImage.url}

@@ -1,93 +1,137 @@
-const { GoogleGenerativeAI } = require("@google/generative-ai");
+const { log } = require('../utils/logger');
+const { fetch } = require('undici');
+const fs = require('fs');
 
-const BASE_IMAGE_STYLE = process.env.GEMINI_IMAGE_STYLE || "Cinematic neon-noir, teal-magenta palette, volumetric rain and fog, soft bloom, anamorphic lens, shallow depth of field, subtle film grain, 16:9 composition";
+const SILICONFLOW_BASE_URL = process.env.SILICONFLOW_BASE_URL || 'https://api.siliconflow.cn/v1';
+const SILICONFLOW_IMAGE_MODEL = process.env.SILICONFLOW_IMAGE_MODEL || 'black-forest-labs/FLUX.1-schnell';
 
-// Use Gemini 3 Pro Image Preview to generate frame-level artwork.
-// referenceImageBase64: base64 string of the first shot image (for character consistency)
-// heroSubject: detailed character description from shot 1
+// 强制风格前缀 - 确保2D扁平卡通风格
+const STYLE_PREFIX = "Flat 2D cartoon style, hand-drawn animation look, cel shading, bright vibrant colors, simple clean lines, rounded cute shapes, child-friendly illustration";
+
+// 负面提示词 - 禁止出现的风格
+const NEGATIVE_PROMPT = "3D, realistic, photorealistic, rendered, depth, shading, volumetric lighting, detailed texture, CGI, blender, unreal engine";
+
+/**
+ * 下载图片并转换为 base64
+ * @param {string} url - 图片URL
+ * @returns {Promise<string>} - base64 编码的图片
+ */
+const downloadImageAsBase64 = async (url) => {
+  if (url.startsWith('data:')) {
+    // 已经是 base64 格式
+    return url.split(',')[1];
+  }
+
+  const response = await fetch(url);
+  const buffer = Buffer.from(await response.arrayBuffer());
+  return buffer.toString('base64');
+};
+
+/**
+ * 清理和标准化 prompt，确保风格一致性
+ * @param {string} prompt - 原始 prompt
+ * @returns {string} - 标准化后的 prompt
+ */
+const normalizePrompt = (prompt) => {
+  // 如果 prompt 已经包含风格前缀，直接返回
+  if (prompt.toLowerCase().includes('flat 2d') || prompt.toLowerCase().includes('2d cartoon')) {
+    // 确保 NO 3D 等负面提示存在
+    if (!prompt.toLowerCase().includes('no 3d')) {
+      return `${prompt}, NO 3D, NO realistic, NO rendering`;
+    }
+    return prompt;
+  }
+
+  // 否则添加完整的风格前缀
+  return `${STYLE_PREFIX}, NO 3D, NO realistic, NO rendering. ${prompt}`;
+};
+
+// 硅基流动图片生成（强化风格一致性）
 exports.generateImage = async (prompt, previousStyleHint = "", styleOverride, referenceImageBase64 = null, heroSubject = "") => {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey || apiKey.trim() === "" || apiKey.startsWith("your_")) {
-    console.log("No valid GEMINI_API_KEY found. Using placeholder image.");
-    const encodedPrompt = encodeURIComponent(prompt.substring(0, 50) + "...");
-    return `https://placehold.co/600x400/222/FFF?text=${encodedPrompt}`;
+  const apiKey = process.env.SILICONFLOW_API_KEY;
+
+  // 检查API密钥
+  if (!apiKey || apiKey.trim() === '' || apiKey.startsWith('your_')) {
+    console.log("No valid SILICONFLOW_API_KEY found. Using placeholder image.");
+    const encodedPrompt = encodeURIComponent(prompt.substring(0, 30) + "...");
+    return `https://placehold.co/600x400/4A90D9/FFF?text=${encodedPrompt}`;
   }
 
-  const imageModel = process.env.GEMINI_IMAGE_MODEL || "gemini-3-pro-image-preview";
-  const appliedStyle = styleOverride && styleOverride.trim() !== '' ? styleOverride.trim() : BASE_IMAGE_STYLE;
-  const genAI = new GoogleGenerativeAI(apiKey);
-  const model = genAI.getGenerativeModel({ model: imageModel });
+  // 构建完整提示词 - 强制添加风格前缀
+  const normalizedPrompt = normalizePrompt(prompt);
 
-  // Build character consistency instruction
-  const heroInstruction = heroSubject
-    ? `CRITICAL - Main Character Description (MUST match exactly): ${heroSubject}.`
-    : "";
+  // 添加主角描述
+  const fullPrompt = heroSubject
+    ? `${normalizedPrompt}. Main characters: ${heroSubject}`
+    : normalizedPrompt;
 
-  // Slightly tighten the prompt for visual fidelity and cross-shot consistency.
-  const styleGlue = previousStyleHint
-    ? `Maintain exact style continuity with previous shot: "${previousStyleHint}".`
-    : "Establish the base look; following shots must keep this style.";
-  const imagePrompt = `
-    Role: Cinematic frame artist.
-    Goal: Render a single storyboard frame that matches the shared style and camera feel.
-    ${heroInstruction}
-    Style: ${appliedStyle}.
-    Continuity: ${styleGlue}
-    Frame description: ${prompt}.
-    Constraints: no text, no captions, 16:9, high fidelity. The main character MUST look identical to the reference image if provided.
-  `;
-
-  // Build content parts - include reference image if available
-  const contentParts = [];
-  if (referenceImageBase64) {
-    contentParts.push({
-      inlineData: {
-        mimeType: "image/png",
-        data: referenceImageBase64,
-      },
-    });
-    contentParts.push({ text: "Reference image above shows the main character. Generate a new image where this SAME character (identical appearance, clothing, colors) performs the action described below:\n\n" + imagePrompt });
-  } else {
-    contentParts.push({ text: imagePrompt });
-  }
+  log('image_gen_start', {
+    promptPreview: fullPrompt.substring(0, 100),
+    model: SILICONFLOW_IMAGE_MODEL
+  });
 
   try {
-    const result = await model.generateContent({
-      contents: [
-        {
-          role: "user",
-          parts: contentParts,
-        },
-      ],
-      generationConfig: {
-        responseModalities: ["TEXT", "IMAGE"],
-        imageConfig:{
-          aspectRatio: "16:9"
-        }
+    // 构建 API 请求参数
+    const requestBody = {
+      model: SILICONFLOW_IMAGE_MODEL,
+      prompt: fullPrompt,
+      image_size: "1024x576",  // 16:9比例
+      num_inference_steps: 20   // FLUX快速推理步数
+    };
+
+    // 硅基流动 API 调用（OpenAI兼容格式）
+    const response = await fetch(`${SILICONFLOW_BASE_URL}/images/generations`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json'
       },
+      body: JSON.stringify(requestBody)
     });
 
-    const candidates = result?.response?.candidates || [];
-    for (const candidate of candidates) {
-      const parts = candidate.content?.parts || [];
-      for (const part of parts) {
-        if (part.inlineData?.data) {
-          const mimeType = part.inlineData.mimeType || "image/png";
-          const base64 = part.inlineData.data;
-          console.log("Image generated successfully via Gemini.");
-          // Return a data URL so the frontend can render directly.
-          return `data:${mimeType};base64,${base64}`;
-        }
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`SiliconFlow API error: ${response.status} ${text}`);
+    }
+
+    const data = await response.json();
+
+    // 返回图片URL
+    if (data.images && data.images[0]) {
+      if (data.images[0].url) {
+        log('image_gen_success', { source: 'url' });
+        return data.images[0].url;
+      }
+      if (data.images[0].b64_json) {
+        log('image_gen_success', { source: 'base64' });
+        return `data:image/png;base64,${data.images[0].b64_json}`;
       }
     }
 
-    console.log("Gemini did not return inline image data; using placeholder.");
-  } catch (error) {
-    console.error("Error generating image with Gemini:", error);
-    console.log("Falling back to placeholder.");
-  }
+    // 兼容其他响应格式
+    if (data.data && data.data[0]) {
+      if (data.data[0].url) {
+        log('image_gen_success', { source: 'url' });
+        return data.data[0].url;
+      }
+      if (data.data[0].b64_json) {
+        log('image_gen_success', { source: 'base64' });
+        return `data:image/png;base64,${data.data[0].b64_json}`;
+      }
+    }
 
-  // Fallback Placeholder
-  const encodedPrompt = encodeURIComponent(prompt.substring(0, 50) + "...");
-  return `https://placehold.co/600x400/222/FFF?text=${encodedPrompt}`;
+    throw new Error('No image data in response');
+
+  } catch (error) {
+    console.error("Error generating image with SiliconFlow:", error.message);
+    log('image_gen_error', { message: error.message });
+
+    // Fallback Placeholder
+    const encodedPrompt = encodeURIComponent(prompt.substring(0, 30) + "...");
+    return `https://placehold.co/600x400/4A90D9/FFF?text=${encodedPrompt}`;
+  }
 };
+
+// 导出辅助函数供其他模块使用
+exports.downloadImageAsBase64 = downloadImageAsBase64;
+exports.STYLE_PREFIX = STYLE_PREFIX;

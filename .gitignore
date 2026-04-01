@@ -19,9 +19,19 @@ frontend/dist/
 # Generated media and data
 backend/data/videos/*
 !backend/data/videos/.gitkeep
+backend/data/audio/
+backend/data/images/
 backend/data/tmp/
 backend/data/gallery.db
 backend/data/gallery.json
+backend/data/storyboard_result.json
+data/
+
+# Test scripts
+backend/test-*.js
+backend/generate_tts.py
+backend/merge-video.js
+backend/retry-video-gen.js
 
 .claude/
 

@@ -1,130 +1,183 @@
+# StoryGen-Atelier
 
-# StoryGen Atelier
-[English](README_EN.md) | [中文](README_CN.md)
+AI 驱动的儿童科普视频自动生成工具。输入一个选题，自动生成分镜脚本、配图、配音，最终合成完整视频。
 
-AI-assisted storyboard and video generation tool. Uses Gemini for generating storyboard text and frames, Vertex AI Veo for generating transition clips, and ffmpeg for stitching the final video. Built-in logs and gallery management.
+## 功能特性
 
-![All Styles](exampleImg/all.png)
+- **智能脚本生成**：基于通义千问 API，自动生成适合 6-10 岁儿童的科普分镜脚本
+- **AI 图片生成**：使用 SiliconFlow API 生成 2D 卡通风格的分镜图片
+- **视频片段生成**：使用 SiliconFlow Wan2.2 模型将图片转换为动态视频
+- **自动配音**：使用 Edge TTS（免费）为每个场景生成配音
+- **音频居中填充**：自动为音频添加前后静音，使配音居中播放
+- **进度跟踪**：实时显示视频生成进度，支持失败场景重试
+- **项目恢复**：页面刷新后可恢复未完成的项目
+- **分镜数量选择**：支持手动指定或 AI 自动判断分镜数量
 
-## Features
-- **Storyboard Generation**: Gemini text model generates storyboard scripts, and Gemini image model generates frames; supports custom styles and shot counts.
-- **Video Generation**: Based on the Interpolation Chain of the storyboard, calls Vertex Veo to generate clips and stitches them into a full video using ffmpeg.
-- **Logs Dashboard**: Video logs + Storyboard logs (SQLite persistence), supports viewing, exporting, and clearing.
-- **Gallery**: Save, load, and delete generated storyboards + videos.
-- **Prompt Guide**: Built-in `guide/VideoGenerationPromptGuide.md` for model prompting reference.
+## 技术栈
 
-## Core Technology: Video Generation & Stitching Algorithm
-This project uses an **"Interpolation Chain" (Sliding Window)** strategy to transform static storyboard images into a coherent video story. The process is fully automated and consists of three main phases:
+- **前端**：React + Vite + Mantine UI
+- **后端**：Node.js + Express + SQLite (better-sqlite3)
+- **AI 服务**：
+  - 通义千问（脚本生成）
+  - SiliconFlow Qwen-Image（图片生成）
+  - SiliconFlow Wan2.2-I2V（视频生成）
+- **配音**：Edge TTS（免费，无需 API Key）
+- **视频处理**：FFmpeg
 
-### 1. Transition Analysis - Gemini
-The system first iterates through the storyboard list using a sliding window to process each pair of adjacent shots (Shot A → Shot B).
-- **Intelligent Analysis**: Calls the **Gemini** model to analyze the visual content of Shot A and Shot B.
-- **Instruction Generation**: Gemini outputs a specific **Transition Prompt** and a suggested **Duration**, detailing how to smoothly transition from the first frame to the second (e.g., "Slow dolly zoom in while panning right...").
+## 目录结构
 
-### 2. Clip Generation - Vertex AI Veo
-Based on the analysis from step 1, **Vertex AI (Veo model)** is called in parallel to generate video clips.
-- **Intermediate Transitions**: For each pair of shots (A, B), the Gemini-generated prompt + Shot A (start frame) + Shot B (end frame) are sent to Veo to generate a connecting video clip.
-- **Closing Shot**: For the final shot (Shot N), the system generates a separate "Closing Shot" clip, using prompts like "Hold on the final frame with a gentle cinematic finish" to give the story an elegant static or subtle ending.
-
-### 3. Final Assembly - FFmpeg
-Once all clips (transition clips + closing clip) are generated, the backend uses **FFmpeg** for lossless stitching.
-- **Sequence Assembly**: All generated `.mp4` clips are written to a list in chronological order.
-- **Stream Copy**: Uses the `concat` protocol and copy mode (`-c copy`) to quickly merge video streams, avoiding quality loss from re-encoding, and finally outputs the complete `full_story_xxx.mp4` file.
-
-## Tech Stack
-- **Frontend**: React, Vite, Mantine UI (Component Library)
-- **Backend**: Node.js (Express), better-sqlite3 (High-performance data storage), fluent-ffmpeg (Video stitching)
-- **AI Services**: Google Gemini (Text/Image), Google Vertex AI Veo (Video Generation)
-
-## Directory Structure
 ```
-backend/    Node.js + Express API, calls Gemini/Vertex, manages logs & data
-frontend/   React + Vite + Mantine UI
-guide/      Prompt guides
-exampleImg/ Example storyboard frames for README (exported from local data)
-backend.log / frontend.log Runtime logs
-```
-
-## Requirements
-- Node.js 18+, npm
-- ffmpeg
-- **Google Cloud Project**: Must enable **Vertex AI API** (Veo model used for video generation)
-- **Gemini API Key**: Used for storyboard script and image generation
-
-## Environment Variables
-Configure in `backend/.env` (copy from `.env.example`):
-```
-PORT=3005
-GEMINI_API_KEY=your_gemini_api_key
-GEMINI_TEXT_MODEL=gemini-3-pro-preview
-GEMINI_IMAGE_MODEL=gemini-3-pro-image-preview
-# Vertex AI (Required for video generation)
-VERTEX_PROJECT_ID=your_gcp_project_id
-VERTEX_LOCATION=us-central1
-VERTEX_VEO_MODEL=veo-3.1-generate-preview
+StoryGen-Atelier/
+├── backend/                # Node.js 后端服务
+│   ├── src/
+│   │   ├── controllers/    # 控制器
+│   │   ├── routes/         # 路由
+│   │   ├── services/       # 服务层
+│   │   └── utils/          # 工具函数
+│   ├── data/               # 数据存储（自动创建）
+│   │   ├── audio/          # 生成的音频
+│   │   ├── images/         # 生成的图片
+│   │   └── videos/         # 生成的视频
+│   └── .env                # 环境变量配置
+├── frontend/               # React 前端
+│   └── src/
+│       ├── App.jsx         # 主应用组件
+│       └── api.js          # API 调用
+└── README.md
 ```
 
-## Quick Start (Recommended)
-No need to start backend and frontend separately. Run from the root directory:
+## 环境要求
+
+- Node.js 18+
+- npm 或 yarn
+- FFmpeg（视频处理）
+
+## 安装与配置
+
+### 1. 克隆仓库
+
 ```bash
-# Grant execution permission (only needed once)
-chmod +x start_servers.sh
-# Start servers
-./start_servers.sh
+git clone https://github.com/muxiaofei-gmail/StoryGen-Atelier.git
+cd StoryGen-Atelier
 ```
-The script will automatically:
-1. Start the backend API on port **3005**
-2. Start the frontend interface on port **5180**
-3. Output logs to `backend.log` and `frontend.log` respectively
 
-## Manual Install & Start
-Backend:
+### 2. 安装依赖
+
 ```bash
+# 安装后端依赖
 cd backend
 npm install
-cp .env.example .env  # And fill in real keys
-npm run dev           # Or npm start
-```
-Frontend (Default port 5180):
-```bash
-cd frontend
+
+# 安装前端依赖
+cd ../frontend
 npm install
+```
+
+### 3. 配置环境变量
+
+在 `backend/` 目录下创建 `.env` 文件：
+
+```env
+# 服务端口
+PORT=3005
+
+# 通义千问 API（脚本生成）
+TONGYI_API_KEY=your_tongyi_api_key
+TONGYI_MODEL=qwen-plus
+
+# SiliconFlow API（图片/视频生成）
+SILICONFLOW_API_KEY=your_siliconflow_api_key
+SILICONFLOW_BASE_URL=https://api.siliconflow.cn/v1
+SILICONFLOW_IMAGE_MODEL=Qwen/Qwen-Image
+SILICONFLOW_VIDEO_MODEL=Wan-AI/Wan2.2-I2V-A14B
+```
+
+### 4. 启动服务
+
+```bash
+# 启动后端服务（在 backend 目录）
+cd backend
+npm run dev
+# 或
+node src/app.js
+
+# 启动前端服务（在 frontend 目录，新终端）
+cd frontend
 npm run dev
 ```
-Build:
-```bash
-cd frontend && npm run build
-```
 
-## Examples
-- Storyboard Style Examples:
-   - Anime Style Example：![Anime](exampleImg/Anime.png)
+- 后端地址：http://localhost:3005
+- 前端地址：http://localhost:5180
 
-https://github.com/user-attachments/assets/a70279b0-80f7-4b9a-96fb-173e5912d43a
+## 使用指南
 
- - <img width="1198" height="1242" alt="image" src="https://github.com/user-attachments/assets/f78a1b54-2490-4d51-80c9-6bb8d41b0b49" />
+1. **输入选题**：在首页输入一个科普选题，如"为什么天空是蓝色的？"
+2. **生成脚本**：点击"生成脚本"，AI 会自动生成分镜脚本
+3. **生成分镜**：确认脚本后，点击"生成分镜"生成配图
+4. **生成视频**：点击"开始生成视频"，系统会自动：
+   - 为每个场景生成配音
+   - 将图片转换为视频片段
+   - 合成最终视频
+5. **下载视频**：生成完成后可下载或预览视频
 
-https://github.com/user-attachments/assets/66bbe81e-34f1-44dd-b648-2a8cb84e5eba
+## 主要功能说明
 
-  - Cyberpunk Example：![Cyberpunk](exampleImg/Cyberpunk.png)  
+### 进度跟踪
 
-https://github.com/user-attachments/assets/ad56e3c8-c14e-48fb-8366-ad22c4e8ea60
+视频生成过程中，前端会实时显示：
+- 当前正在生成的场景
+- 成功/失败的场景数量
+- 整体进度百分比
 
-    
-  - Ghibli Style Example：![Ghibli Style](exampleImg/GhibliStyle.png)  
+### 失败重试
 
-https://github.com/user-attachments/assets/fe6c57fa-0bb5-4c81-8efb-1c7c52011948
+如果部分场景生成失败：
+- 会显示失败场景列表
+- 可单独重试失败的场景
+- 重试成功后可重新合成视频
 
+### 项目恢复
 
+如果页面刷新或意外关闭：
+- 重新打开页面会检测未完成的项目
+- 点击"恢复项目"可继续之前的进度
 
-  - Realism Example：![Realism](exampleImg/Realism.png)
+### 音频居中填充
 
-https://github.com/user-attachments/assets/2ca41cbf-2765-4e6b-8e85-8ba0e8e191f5
+当音频时长短于视频时长时：
+- 自动在音频前后添加静音
+- 使配音在视频中间播放
+- 示例：视频 5 秒，音频 3 秒 → 前 1 秒静音 + 3 秒音频 + 1 秒静音
 
+## API 接口
 
-  - Chinese Ink Example：![Chinese Ink](exampleImg/ChineseInk.png)  
+| 接口 | 方法 | 说明 |
+|------|------|------|
+| `/api/storyboard/generate` | POST | 生成分镜脚本和图片 |
+| `/api/video/start` | POST | 开始生成视频 |
+| `/api/video/status/:taskId` | GET | 获取视频生成进度 |
+| `/api/video/retry` | POST | 重试失败的场景 |
+| `/api/video/recompose` | POST | 重新合成视频 |
+| `/api/project/active` | GET | 获取当前活跃项目 |
 
-https://github.com/user-attachments/assets/99305353-a348-45ca-add7-f9692bccdc95
+## 常见问题
 
+### Q: 视频生成失败怎么办？
+A: 检查 API Key 是否正确，查看后端日志 `backend.log` 获取详细错误信息。
 
+### Q: 图片风格不一致怎么办？
+A: 当前版本通过 prompt 约束风格，但由于 AI 生成的随机性，无法 100% 保证一致性。后续版本会考虑支持风格参考功能。
 
+### Q: 支持哪些配音语言？
+A: 当前支持中文配音，使用 Edge TTS 的中文语音模型。
+
+## 许可证
+
+MIT License
+
+## 致谢
+
+- [通义千问](https://tongyi.aliyun.com/) - 脚本生成
+- [SiliconFlow](https://siliconflow.cn/) - 图片/视频生成
+- [Edge TTS](https://github.com/rany2/edge-tts) - 语音合成
+- [Mantine UI](https://mantine.dev/) - UI 组件库
